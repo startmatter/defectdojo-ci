@@ -15,7 +15,9 @@ on:
 jobs:
   security:
     uses: startmatter/defectdojo-ci/.github/workflows/defectdojo.yml@main
-    secrets: inherit
+    secrets:
+      DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+      DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
 ```
 
 Set two secrets on the calling repository (or at organization level):

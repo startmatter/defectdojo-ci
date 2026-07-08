@@ -18,6 +18,13 @@ on:
         type: boolean
         default: true
         required: false
+    # Declared explicitly, not inherited: `secrets: inherit` does not cross
+    # organization boundaries, and callers live in a different org.
+    secrets:
+      DEFECTDOJO_URL:
+        required: true
+      DEFECTDOJO_TOKEN:
+        required: true
 
 jobs:
   # Runs first and fails on active Criticals. The scan jobs below deliberately do
