@@ -1,0 +1,128 @@
+# Reusable DefectDojo security scanning + critical-findings gate.
+#
+# Call it from a repository like this:
+#
+#   jobs:
+#     security:
+#       uses: sportsid-inc/defectdojo-ci/.github/workflows/defectdojo.yml@main
+#       secrets: inherit
+#
+# Needs repo (or org) secrets DEFECTDOJO_URL and DEFECTDOJO_TOKEN.
+name: DefectDojo
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: "Fail the run while the product has active Critical findings"
+        type: boolean
+        default: true
+        required: false
+
+jobs:
+  # Runs first and fails on active Criticals. The scan jobs below deliberately do
+  # NOT depend on it: a blocked repo must still refresh its findings, otherwise
+  # fixing the code could never clear the gate.
+  gate:
+    if: ${{ inputs.gate }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for active Critical findings
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+        run: |
+          CODE=$(curl -s -o /tmp/gate.json -w "%{http_code}" -G "$DD_URL/api/v2/findings/" \
+            -H "Authorization: Token $DD_TOKEN" \
+            --data-urlencode "product_name=$GITHUB_REPOSITORY" \
+            --data-urlencode "severity=Critical" \
+            --data-urlencode "active=true" \
+            --data-urlencode "duplicate=false" \
+            --data-urlencode "false_p=false" \
+            --data-urlencode "risk_accepted=false" \
+            --data-urlencode "limit=10")
+          if [ "$CODE" = "000" ]; then
+            echo "::warning::cannot reach $DD_URL — gate skipped so an outage does not block everyone"
+            exit 0
+          fi
+          if [ "$CODE" != "200" ]; then
+            echo "::error::DefectDojo answered HTTP $CODE (check DEFECTDOJO_TOKEN)"
+            head -c 300 /tmp/gate.json
+            exit 1
+          fi
+          COUNT=$(jq -r '.count' /tmp/gate.json)
+          if [ "${COUNT:-0}" -gt 0 ]; then
+            echo "::error::$COUNT active Critical finding(s) in $GITHUB_REPOSITORY"
+            jq -r '.results[].title' /tmp/gate.json | sed 's/^/  - /'
+            echo "Fix them, or triage in $DD_URL (False Positive / Accept Risk), then re-run."
+            exit 1
+          fi
+          echo "No active Critical findings in $GITHUB_REPOSITORY"
+
+  scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tool: semgrep
+            report: semgrep-report.json
+            scan_type: Semgrep JSON Report
+          - tool: gitleaks
+            report: gitleaks-report.json
+            scan_type: Gitleaks Scan
+          - tool: trivy
+            report: trivy-report.json
+            scan_type: Trivy Scan
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans the whole history
+
+      - name: Run ${{ matrix.tool }}
+        run: |
+          case "${{ matrix.tool }}" in
+            semgrep)
+              docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:latest \
+                semgrep scan --config p/security-audit --json --output "${{ matrix.report }}" . || true
+              ;;
+            gitleaks)
+              docker run --rm -v "$PWD:/src" -w /src --entrypoint gitleaks zricethezav/gitleaks:latest \
+                detect --source . --report-format json --report-path "${{ matrix.report }}" --exit-code 0 || true
+              ;;
+            trivy)
+              docker run --rm -v "$PWD:/src" -w /src --entrypoint trivy aquasec/trivy:latest \
+                fs --scanners vuln,misconfig,secret --format json --output "${{ matrix.report }}" . || true
+              ;;
+          esac
+
+      - name: Upload to DefectDojo
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+        run: |
+          sudo chown "$(id -u)" "${{ matrix.report }}" 2>/dev/null || true
+          if [ ! -s "${{ matrix.report }}" ]; then
+            echo "no report produced by ${{ matrix.tool }}, nothing to upload"
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$DD_URL/api/v2/reimport-scan/" \
+            -H "Authorization: Token $DD_TOKEN" \
+            -F "scan_type=${{ matrix.scan_type }}" \
+            -F "file=@${{ matrix.report }}" \
+            -F "product_type_name=GitHub" \
+            -F "product_name=$GITHUB_REPOSITORY" \
+            -F "engagement_name=CI" \
+            -F "auto_create_context=true" \
+            -F "minimum_severity=Low" \
+            -F "active=true" \
+            -F "verified=false" \
+            -F "close_old_findings=true" \
+            -F "branch_tag=${GITHUB_REF_NAME}" \
+            -F "commit_hash=${GITHUB_SHA}")
+          if [ "$code" = "201" ]; then
+            echo "${{ matrix.scan_type }} uploaded"
+          else
+            echo "::warning::upload of ${{ matrix.scan_type }} failed (HTTP $code)"
+            cat /tmp/resp.json
+          fi
