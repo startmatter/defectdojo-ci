@@ -23,6 +23,11 @@ on:
         type: string
         default: ubuntu-latest
         required: false
+      product_type:
+        description: "DefectDojo product type the repository belongs to. Must match the existing one, DefectDojo rejects a mismatch."
+        type: string
+        default: GitHub
+        required: false
     # Declared explicitly, not inherited: `secrets: inherit` does not cross
     # organization boundaries, and callers live in a different org.
     secrets:
@@ -142,7 +147,7 @@ jobs:
             -H "Authorization: Token $DD_TOKEN" \
             -F "scan_type=${{ matrix.scan_type }}" \
             -F "file=@${{ matrix.report }}" \
-            -F "product_type_name=GitHub" \
+            -F "product_type_name=${{ inputs.product_type }}" \
             -F "product_name=$GITHUB_REPOSITORY" \
             -F "engagement_name=$DD_ENGAGEMENT" \
             -F "auto_create_context=true" \
