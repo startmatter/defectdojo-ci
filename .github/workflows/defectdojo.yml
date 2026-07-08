@@ -18,6 +18,11 @@ on:
         type: boolean
         default: true
         required: false
+      runner:
+        description: "Runner label: ubuntu-latest, or self-hosted to keep Actions minutes at zero"
+        type: string
+        default: ubuntu-latest
+        required: false
     # Declared explicitly, not inherited: `secrets: inherit` does not cross
     # organization boundaries, and callers live in a different org.
     secrets:
@@ -32,7 +37,7 @@ jobs:
   # fixing the code could never clear the gate.
   gate:
     if: ${{ inputs.gate }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Check for active Critical findings
         env:
@@ -67,7 +72,7 @@ jobs:
           echo "No active Critical findings in $GITHUB_REPOSITORY"
 
   scan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     strategy:
       fail-fast: false
       matrix:
