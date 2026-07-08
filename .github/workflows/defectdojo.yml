@@ -118,20 +118,27 @@ jobs:
 
       - name: Run ${{ matrix.tool }}
         run: |
+          # A self-hosted runner may sit behind a VPN resolver its containers cannot
+          # reach; without this Semgrep cannot fetch rules and Trivy cannot fetch its
+          # vulnerability database, and both quietly produce nothing.
+          DNS="--dns 1.1.1.1 --dns 8.8.8.8"
           case "${{ matrix.tool }}" in
             semgrep)
-              docker run --rm -v "$PWD:/src" -w /src semgrep/semgrep:latest \
+              docker run --rm $DNS -v "$PWD:/src" -w /src semgrep/semgrep:latest \
                 semgrep scan --config p/security-audit --json --output "${{ matrix.report }}" . || true
               ;;
             gitleaks)
-              docker run --rm -v "$PWD:/src" -w /src --entrypoint gitleaks zricethezav/gitleaks:latest \
+              docker run --rm $DNS -v "$PWD:/src" -w /src --entrypoint gitleaks zricethezav/gitleaks:latest \
                 detect --source . --report-format json --report-path "${{ matrix.report }}" --exit-code 0 || true
               ;;
             trivy)
-              docker run --rm -v "$PWD:/src" -w /src --entrypoint trivy aquasec/trivy:latest \
+              docker run --rm $DNS -v "$PWD:/src" -w /src --entrypoint trivy aquasec/trivy:latest \
                 fs --scanners vuln,misconfig,secret --format json --output "${{ matrix.report }}" . || true
               ;;
           esac
+          if [ ! -s "${{ matrix.report }}" ]; then
+            echo "::warning::${{ matrix.tool }} produced no report — check container DNS and network"
+          fi
 
       - name: Upload to DefectDojo
         env:
