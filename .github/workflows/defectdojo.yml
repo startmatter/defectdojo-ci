@@ -31,12 +31,20 @@ on:
       DEFECTDOJO_TOKEN:
         required: true
 
+env:
+  # A pull request must never overwrite the default branch's findings, so it gets
+  # its own engagement and never closes anything.
+  DD_ENGAGEMENT: ${{ github.event_name == 'pull_request' && format('PR-{0}', github.event.number) || 'CI' }}
+  DD_CLOSE_OLD: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+
 jobs:
-  # Runs first and fails on active Criticals. The scan jobs below deliberately do
-  # NOT depend on it: a blocked repo must still refresh its findings, otherwise
-  # fixing the code could never clear the gate.
+  # Runs after the scanners so it judges the code in *this* ref: a pull request that
+  # fixes the finding turns the gate green, instead of being blocked by the state of
+  # the default branch. The scanners never depend on the gate, so a blocked branch
+  # can always refresh its findings.
   gate:
     if: ${{ inputs.gate }}
+    needs: scan
     runs-on: ${{ inputs.runner }}
     steps:
       - name: Check for active Critical findings
@@ -44,9 +52,21 @@ jobs:
           DD_URL: ${{ secrets.DEFECTDOJO_URL }}
           DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
         run: |
+          PRODUCT_ID=$(curl -s -G "$DD_URL/api/v2/products/" -H "Authorization: Token $DD_TOKEN" \
+            --data-urlencode "name=$GITHUB_REPOSITORY" | jq -r '.results[0].id // empty')
+          if [ -z "$PRODUCT_ID" ]; then
+            echo "No product yet for $GITHUB_REPOSITORY — first scan is still uploading"
+            exit 0
+          fi
+          ENGAGEMENT_ID=$(curl -s -G "$DD_URL/api/v2/engagements/" -H "Authorization: Token $DD_TOKEN" \
+            --data-urlencode "product=$PRODUCT_ID" --data-urlencode "name=$DD_ENGAGEMENT" | jq -r '.results[0].id // empty')
+          if [ -z "$ENGAGEMENT_ID" ]; then
+            echo "No '$DD_ENGAGEMENT' engagement yet — nothing scanned for this ref"
+            exit 0
+          fi
           CODE=$(curl -s -o /tmp/gate.json -w "%{http_code}" -G "$DD_URL/api/v2/findings/" \
             -H "Authorization: Token $DD_TOKEN" \
-            --data-urlencode "product_name=$GITHUB_REPOSITORY" \
+            --data-urlencode "test__engagement=$ENGAGEMENT_ID" \
             --data-urlencode "severity=Critical" \
             --data-urlencode "active=true" \
             --data-urlencode "duplicate=false" \
@@ -64,12 +84,12 @@ jobs:
           fi
           COUNT=$(jq -r '.count' /tmp/gate.json)
           if [ "${COUNT:-0}" -gt 0 ]; then
-            echo "::error::$COUNT active Critical finding(s) in $GITHUB_REPOSITORY"
+            echo "::error::$COUNT active Critical finding(s) in $GITHUB_REPOSITORY ($DD_ENGAGEMENT)"
             jq -r '.results[].title' /tmp/gate.json | sed 's/^/  - /'
             echo "Fix them, or triage in $DD_URL (False Positive / Accept Risk), then re-run."
             exit 1
           fi
-          echo "No active Critical findings in $GITHUB_REPOSITORY"
+          echo "No active Critical findings in $GITHUB_REPOSITORY ($DD_ENGAGEMENT)"
 
   scan:
     runs-on: ${{ inputs.runner }}
@@ -124,13 +144,13 @@ jobs:
             -F "file=@${{ matrix.report }}" \
             -F "product_type_name=GitHub" \
             -F "product_name=$GITHUB_REPOSITORY" \
-            -F "engagement_name=CI" \
+            -F "engagement_name=$DD_ENGAGEMENT" \
             -F "auto_create_context=true" \
             -F "minimum_severity=Low" \
             -F "active=true" \
             -F "verified=false" \
-            -F "close_old_findings=true" \
-            -F "branch_tag=${GITHUB_REF_NAME}" \
+            -F "close_old_findings=$DD_CLOSE_OLD" \
+            -F "branch_tag=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
             -F "commit_hash=${GITHUB_SHA}")
           if [ "$code" = "201" ]; then
             echo "${{ matrix.scan_type }} uploaded"
