@@ -4,7 +4,7 @@
 #
 #   jobs:
 #     security:
-#       uses: sportsid-inc/defectdojo-ci/.github/workflows/defectdojo.yml@main
+#       uses: startmatter/defectdojo-ci/.github/workflows/defectdojo.yml@main
 #       secrets: inherit
 #
 # Needs repo (or org) secrets DEFECTDOJO_URL and DEFECTDOJO_TOKEN.

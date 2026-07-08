@@ -1,10 +1,10 @@
 # defectdojo-ci
 
-Shared security scanning for sportsid-inc: Semgrep, Gitleaks and Trivy run on every
-push to the default branch, results land in DefectDojo (https://ob.startmatter.com),
-and a gate fails the run while a repository has active Critical findings.
+Reusable GitHub Actions workflow that runs Semgrep, Gitleaks and Trivy on a repository,
+uploads the results to a DefectDojo instance, and fails the run while that repository
+has active Critical findings.
 
-Add it to a repository:
+## Usage
 
 ```yaml
 name: Security
@@ -14,10 +14,25 @@ on:
   pull_request:
 jobs:
   security:
-    uses: sportsid-inc/defectdojo-ci/.github/workflows/defectdojo.yml@main
+    uses: startmatter/defectdojo-ci/.github/workflows/defectdojo.yml@main
     secrets: inherit
 ```
 
-Unblocking a repository: fix the finding, or triage it in DefectDojo as False Positive
-or Accept Risk. Scanners keep running even while the gate fails, so the next run picks
-up the fix. To turn the gate off for one repository, pass `with: {gate: false}`.
+Set two secrets on the calling repository (or at organization level):
+
+| secret | value |
+| --- | --- |
+| `DEFECTDOJO_URL` | base URL of your DefectDojo instance |
+| `DEFECTDOJO_TOKEN` | API token of a DefectDojo service user |
+
+Products are created automatically, named after the repository.
+
+## The gate
+
+The `gate` job fails while the product has active Critical findings that are not marked
+False Positive or Risk Accepted. The scan jobs do not depend on it, so a blocked
+repository still refreshes its findings — otherwise fixing the code could never clear
+the gate.
+
+Unblock by fixing the finding or triaging it in DefectDojo. To disable the gate for a
+repository, call the workflow with `with: {gate: false}`.
