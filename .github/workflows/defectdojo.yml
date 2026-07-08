@@ -160,6 +160,9 @@ jobs:
           if [ "$code" = "201" ]; then
             echo "${{ matrix.scan_type }} uploaded"
           else
-            echo "::warning::upload of ${{ matrix.scan_type }} failed (HTTP $code)"
+            # Must be fatal: a silent upload failure leaves the gate with no findings
+            # to judge, and it would wave the run through.
+            echo "::error::upload of ${{ matrix.scan_type }} failed (HTTP $code)"
             cat /tmp/resp.json
+            exit 1
           fi
