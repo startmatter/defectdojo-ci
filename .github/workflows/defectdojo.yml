@@ -111,6 +111,12 @@ jobs:
           - tool: trivy
             report: trivy-report.json
             scan_type: Trivy Scan
+          - tool: checkov
+            report: checkov-report.json
+            scan_type: Checkov Scan
+          - tool: hadolint
+            report: hadolint-report.json
+            scan_type: Hadolint Dockerfile check
     steps:
       - uses: actions/checkout@v4
         with:
@@ -134,6 +140,24 @@ jobs:
             trivy)
               docker run --rm $DNS -v "$PWD:/src" -w /src --entrypoint trivy aquasec/trivy:latest \
                 fs --scanners vuln,misconfig,secret --format json --output "${{ matrix.report }}" . || true
+              ;;
+            checkov)
+              # IaC misconfig: CDK synth output, CloudFormation, k8s, Terraform, Dockerfile
+              docker run --rm $DNS -v "$PWD:/src" -w /src bridgecrew/checkov:latest \
+                -d /src -o json --output-file-path /src --compact --quiet >/dev/null 2>&1 || true
+              [ -f results_json.json ] && mv results_json.json "${{ matrix.report }}"
+              ;;
+            hadolint)
+              # one report merged from every Dockerfile in the repo; [] if there are none
+              files=$(find . -type f \( -iname 'Dockerfile' -o -iname 'Dockerfile.*' -o -iname '*.Dockerfile' \))
+              if [ -z "$files" ]; then
+                echo '[]' > "${{ matrix.report }}"
+              else
+                printf '%s\n' "$files" | while read -r f; do
+                  rel="${f#./}"
+                  docker run --rm $DNS -v "$PWD:/src" -w /src hadolint/hadolint hadolint -f json "$rel" 2>/dev/null || true
+                done | jq -s 'add // []' > "${{ matrix.report }}"
+              fi
               ;;
           esac
           if [ ! -s "${{ matrix.report }}" ]; then
