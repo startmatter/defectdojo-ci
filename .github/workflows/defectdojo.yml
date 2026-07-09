@@ -28,6 +28,16 @@ on:
         type: string
         default: GitHub
         required: false
+      image:
+        description: "Container image reference (e.g. ghcr.io/org/app:tag). When set, Trivy scans it. The runner must be able to pull it."
+        type: string
+        default: ""
+        required: false
+      dast_url:
+        description: "Live URL to run an OWASP ZAP baseline scan against. When set, ZAP scans it. Use a staging URL, never production."
+        type: string
+        default: ""
+        required: false
     # Declared explicitly, not inherited: `secrets: inherit` does not cross
     # organization boundaries, and callers live in a different org.
     secrets:
@@ -197,3 +207,53 @@ jobs:
             cat /tmp/resp.json
             exit 1
           fi
+
+  # Optional: scan a built image. Runs only when `image` is provided.
+  image-scan:
+    if: ${{ inputs.image != '' }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: Trivy image scan
+        run: |
+          DNS="--dns 1.1.1.1 --dns 8.8.8.8"
+          docker run --rm $DNS -v "$PWD:/out" --entrypoint trivy aquasec/trivy:latest \
+            image --format json --output /out/trivy-image-report.json "${{ inputs.image }}" || true
+      - name: Upload to DefectDojo
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+        run: |
+          sudo chown "$(id -u)" trivy-image-report.json 2>/dev/null || true
+          [ -s trivy-image-report.json ] || { echo "::error::Trivy image scan produced no report (could the runner pull ${{ inputs.image }}?)"; exit 1; }
+          code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$DD_URL/api/v2/reimport-scan/" \
+            -H "Authorization: Token $DD_TOKEN" \
+            -F "scan_type=Trivy Scan" -F "file=@trivy-image-report.json" \
+            -F "product_type_name=${{ inputs.product_type }}" -F "product_name=$GITHUB_REPOSITORY" \
+            -F "engagement_name=$DD_ENGAGEMENT-image" -F "auto_create_context=true" -F "minimum_severity=Low" \
+            -F "close_old_findings=$DD_CLOSE_OLD" -F "branch_tag=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" -F "commit_hash=${GITHUB_SHA}")
+          [ "$code" = "201" ] && echo "Trivy image scan uploaded" || { echo "::error::upload failed (HTTP $code)"; cat /tmp/resp.json; exit 1; }
+
+  # Optional: dynamic scan of a running app. Runs only when `dast_url` is provided.
+  dast:
+    if: ${{ inputs.dast_url != '' }}
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - name: OWASP ZAP baseline
+        run: |
+          DNS="--dns 1.1.1.1 --dns 8.8.8.8"
+          docker run --rm $DNS -v "$PWD:/zap/wrk:rw" --entrypoint zap-baseline.py \
+            ghcr.io/zaproxy/zaproxy:stable -t "${{ inputs.dast_url }}" -J zap-report.json -I || true
+      - name: Upload to DefectDojo
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+        run: |
+          sudo chown "$(id -u)" zap-report.json 2>/dev/null || true
+          [ -s zap-report.json ] || { echo "::error::ZAP produced no report (is ${{ inputs.dast_url }} reachable?)"; exit 1; }
+          code=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$DD_URL/api/v2/reimport-scan/" \
+            -H "Authorization: Token $DD_TOKEN" \
+            -F "scan_type=ZAP Scan" -F "file=@zap-report.json" \
+            -F "product_type_name=${{ inputs.product_type }}" -F "product_name=$GITHUB_REPOSITORY" \
+            -F "engagement_name=$DD_ENGAGEMENT-dast" -F "auto_create_context=true" -F "minimum_severity=Low" \
+            -F "close_old_findings=$DD_CLOSE_OLD" -F "branch_tag=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" -F "commit_hash=${GITHUB_SHA}")
+          [ "$code" = "201" ] && echo "ZAP scan uploaded" || { echo "::error::upload failed (HTTP $code)"; cat /tmp/resp.json; exit 1; }
